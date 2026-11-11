@@ -113,6 +113,68 @@ def latest_mtime(acc_dir):
     return m
 
 
+def wxgf_to_gif(data, gif_path):
+    """微信私有 wxgf（HEVC）动图 -> GIF，逻辑同 emoticon_export"""
+    try:
+        import imageio_ffmpeg
+        ff = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return False
+    hpath = gif_path + ".h265"
+    vf = "split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+    def run(buf):
+        with open(hpath, "wb") as fh:
+            fh.write(buf)
+        subprocess.run([ff, "-y", "-hide_banner", "-loglevel", "error", "-i", hpath,
+                        "-vf", vf, "-loop", "0", gif_path], capture_output=True, creationflags=flags)
+        return os.path.exists(gif_path) and os.path.getsize(gif_path) > 100
+
+    ok = run(data)
+    if not ok:  # 退路：从 VPS / SPS 起截取裸流再试
+        cuts = [x for x in (data.find(b"\x00\x00\x00\x01\x40\x01"),
+                            data.find(b"\x00\x00\x00\x01\x42\x01")) if x >= 0]
+        if cuts:
+            ok = run(data[min(cuts):])
+    try:
+        os.remove(hpath)
+    except OSError:
+        pass
+    return ok
+
+
+def export_wechat_chat_cache(ee, acc, key, dst, emo_dir):
+    """解密 cache\\*\\Emoticon 里的聊天表情，跳过和收藏重复的"""
+    from concurrent.futures import ThreadPoolExecutor
+    fav_names = {os.path.basename(f) for f in glob.glob(os.path.join(emo_dir, "Persist", "*", "*"))}
+    files = sorted(glob.glob(os.path.join(acc, "cache", "*", "Emoticon", "*", "*")))
+    os.makedirs(dst, exist_ok=True)
+    seen, jobs, n = set(), [], 0
+    for f in files:
+        name = os.path.basename(f)
+        if name in fav_names or name in seen:
+            continue
+        seen.add(name)
+        dec = ee.decrypt_file(f, key)
+        if not dec:
+            continue
+        fmt = ee.fmt_of(dec)
+        if fmt == "dat":
+            continue
+        n += 1
+        if fmt == "wxgf":
+            jobs.append((dec, os.path.join(dst, f"{n:03d}.gif")))
+        else:
+            with open(os.path.join(dst, f"{n:03d}.{fmt}"), "wb") as fh:
+                fh.write(dec)
+    print(f"[*] 聊天里的表情: {n} 个（其中 {len(jobs)} 个动图正在转 GIF，稍等 ...）")
+    with ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 4) // 2)) as pool:
+        ok = sum(pool.map(lambda j: wxgf_to_gif(*j), jobs))
+    print(f"[*] 动图转换完成 {ok}/{len(jobs)}")
+    return n
+
+
 def export_wechat():
     print("\n---------- 微信 ----------")
     if not process_running("Weixin.exe"):
@@ -134,7 +196,23 @@ def export_wechat():
     out = os.path.join(OUT_ROOT, f"微信_{wxid}")
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out, exist_ok=True)
-    ee.run_export(acc, wxid, ee.find_emoticon_dir(acc), out)
+    emo_dir = ee.find_emoticon_dir(acc)
+
+    # 先自己拿到表情密钥：收藏表情和聊天缓存里的表情用的是同一把
+    key = None
+    probe = next((f for f in glob.glob(os.path.join(emo_dir, "Persist", "*", "*"))
+                  if os.path.getsize(f) >= 16), None)
+    if probe:
+        with open(probe, "rb") as fh:
+            found = ee.find_key_from_memory(fh.read(16), wxid)
+        if found:
+            key = found[1]
+            print(f"[+] 已拿到表情密钥")
+    ee.run_export(acc, wxid, emo_dir, out, key_hex=key.hex() if key else None)
+
+    # 聊天里发过 / 收到过的表情（cache\年-月\Emoticon），收藏里没有的另存一份
+    if key:
+        export_wechat_chat_cache(ee, acc, key, os.path.join(out, "聊天里的表情"), emo_dir)
     gif_dir = os.path.join(out, "只看GIF动图")
     n, big = collect_gifs(out, gif_dir)
     return ("微信", wxid, n, big, gif_dir)
@@ -184,7 +262,11 @@ def export_qq():
         recv = sorted(glob.glob(os.path.join(emo, "emoji-recv", "*", "Ori", "*")))
         n_fav = copy_sniffed(fav, os.path.join(out, "收藏的表情"))
         n_recv = copy_sniffed(recv, os.path.join(out, "聊天收到的表情"))
-        print(f"[*] QQ {qq}: 收藏 {n_fav} 个，聊天收到 {n_recv} 个")
+        # 别人当「图片」发来的动图：只取 GIF，不碰普通照片
+        pics = [f for f in sorted(glob.glob(os.path.join(os.path.dirname(emo), "Pic", "*", "Ori", "*")))
+                if sniff(f) == "gif"]
+        n_pic = copy_sniffed(pics, os.path.join(out, "聊天图片里的GIF")) if pics else 0
+        print(f"[*] QQ {qq}: 收藏 {n_fav} 个，聊天收到 {n_recv} 个，聊天图片里的 GIF {n_pic} 个")
         gif_dir = os.path.join(out, "只看GIF动图")
         n, big = collect_gifs(out, gif_dir)
         results.append(("QQ", qq, n, big, gif_dir))
