@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+导出结果/
+export/
+emoticon_export/
+*.db
+log.txt
+wechat_keys.txt
