@@ -6,3 +6,6 @@ emoticon_export/
 *.db
 log.txt
 wechat_keys.txt
+tg.session
+tg.session-journal
+tg_config.txt

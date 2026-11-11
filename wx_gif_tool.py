@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """表情包一键导出工具（Windows）
-支持：微信 4.x、QQ（QQNT 新版）
+支持：微信 4.x、QQ（QQNT 新版）、Telegram（官方接口）
 - 微信：自动找到当前登录的微信号 -> 解密导出全部收藏表情
 - QQ：  直接读取本地缓存的收藏表情、聊天里收到的表情（不加密，按真实格式还原）
+- Telegram：用官方接口导出收藏贴纸 / 最近贴纸 / 保存的 GIF，统一转成 GIF（见 tg_export.py）
 最后把所有 GIF 单独挑出来。
 微信部分基于开源项目 Circumsized/Wechat-Emoticon-Export (MIT)。
 """
@@ -192,10 +193,14 @@ def export_qq():
 
 def main():
     print("=" * 50)
-    print("   表情包一键导出（微信 + QQ）")
+    print("   表情包一键导出（微信 + QQ + Telegram）")
     print("=" * 50)
     results = []
-    for job in (export_wechat, export_qq):
+    def export_tg():
+        import tg_export
+        return tg_export.export_telegram(OUT_ROOT, collect_gifs)
+
+    for job in (export_wechat, export_qq, export_tg):
         try:
             r = job()
         except Exception as e:
@@ -208,7 +213,7 @@ def main():
 
     print("\n" + "=" * 50)
     if not results:
-        print("  什么都没导出来。微信要先登录；QQ 需要新版 QQ。")
+        print("  什么都没导出来。微信要先登录；QQ 需要新版 QQ；Telegram 要先运行「设置Telegram.bat」。")
     for app, acc, n, big, gif_dir in results:
         print(f"  {app} {acc}: {n} 个 GIF -> {gif_dir}")
         if big:
